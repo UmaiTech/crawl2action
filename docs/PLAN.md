@@ -89,6 +89,21 @@ Target about 50 stores in 6–8 verticals (apparel, beauty, electronics, home, g
 - a PII scrub on reviews;
 - product images are stored (for the image LoRA and multimodal later) with source and licensing metadata.
 
+**Labeling scraped data with Jev** (`src/c2a/labeling/`, CLI `c2a label run|export`). Jev is TypeSafe AI's hosted System One decision model: `POST https://api.typesafe.ai/v1/systemone`, model `jev-latest`, key `TYPESAFE_API_KEY`. It is used in two places:
+- **Before Firecrawl `/extract`:** the `page_v1` question set classifies scraped markdown as product_detail / category_listing / content / other, so extract credits are only spent on product pages.
+- **After normalization:**
+  - `product_v1` labels each product: vertical, audience, price tier, use/occasion, bundle, restricted, PII and copy quality.
+  - `pair_v1` labels query↔product and product↔product pairs as exact / substitute / complement / irrelevant. These become recommendation training data.
+
+Each item is one request with all questions of the set, answered with probabilities.
+
+**Confidence gating** (`configs/labeling.yaml`):
+- Confident answers are accepted automatically.
+- Uncertain answers go to the teacher (Kimi K3). If the teacher agrees, the label is accepted as `jev+teacher`; otherwise it goes to the **human review queue**.
+- Human-reviewed labels become **C2A-Bench gold** data and **decider training data**.
+
+Responses are cached on disk (re-runs never pay twice), and each run has a request budget. Question sets are versioned, so labels from different wordings are never mixed.
+
 ## 2. Task families and datasets
 | Task | Input | Output | Signal / grader |
 |---|---|---|---|
@@ -115,7 +130,13 @@ Target about 50 stores in 6–8 verticals (apparel, beauty, electronics, home, g
   1. **Framing sub-decisions as small, calibrated classification calls** instead of free-form generation.
   2. **A mixture-of-models router** in front of the serving tiers.
 
-**Where decision calls go in crawl2action.** One `decide(evidence, question, labels) -> {label: prob}` interface in `src/c2a/decide/`:
+**One contract: System One.** Jev (TypeSafe, hosted), Kev (open, Apache-2.0) and the Decision-1.0 models all speak the same API:
+- a `state` document plus typed questions: `noul` (yes/no), `choice` (1–255 options) and `score` (ordered levels);
+- every answer comes back with probabilities (and a confidence value) in one forward pass.
+
+It is the canonical decision interface in `src/c2a/decide/` (`SystemOneClient`, with the `decide()` helper for single-choice calls). Hosted Jev is our **labeler**. The decider we post-train will serve the same `/v1/systemone` API as its drop-in replacement, including the gateway's `/v1/systemone` endpoint and the router's decider pool.
+
+**Where decision calls go in crawl2action:**
 | Decision | Labels (set at request time) | Used for |
 |---|---|---|
 | Query↔product relevance | exact / substitute / complement / irrelevant (ESCI) | Candidate filtering, pre-checkout reranking features, and the reward for Rec-Pre |
@@ -127,9 +148,9 @@ Target about 50 stores in 6–8 verticals (apparel, beauty, electronics, home, g
 
 **Model**
 - **M2 bake-off for the decider:**
-  - Decision-1.0-Lux-9B as it ships (baseline only; verify its license and model card first);
-  - the same model fine-tuned on our labels (ESCI and C2A gold subset, via Tinker);
-  - a small same-family model distilled from the teacher.
+  - **hosted Jev**, the quality reference and current labeler;
+  - Kev-9B and Decision-1.0-Lux-9B as they ship (baselines only; verify their licenses);
+  - the same models fine-tuned on our labels: C2A gold, `jev+teacher`-verified labels and ESCI.
 - Metrics: weighted accuracy, **calibration (ECE and Brier score)** and latency.
 - The winner does three jobs:
   - a **fast grader and reward model** in the RL loop (a better fit than a free-form judge for any grader that is really a classification);
@@ -161,7 +182,7 @@ Qwen3, GLM-5 and MiMo all use OPD in their post-training pipelines. Running plai
 |---|---|
 | Student (Qwen3.8-27B or Inkling-Small) | Cold-start SFT → RLHF / RL with rubric, Rank-GRPO and verifiable rewards → optional self-distillation |
 | Fast reranker | On-policy distillation from the RL-trained student → optional student RL |
-| Decider (starts from Decision-1.0-Lux-9B or a same-family small model) | SFT on ESCI plus C2A gold labels → RL with a calibration-aware reward (log-loss / Brier score) |
+| Decider (starts from Kev-9B or Decision-1.0-Lux-9B; both Qwen3.5-9B and System One compatible) | kev.train-style: a LoRA plus a small classification head, trained with cross-entropy (a proper scoring rule, so it stays calibrated). Trained on C2A gold, `jev+teacher`-verified labels and ESCI, via the Modal fallback, because Tinker trains language-model heads. RL calibration is evaluated later |
 | GenRM judge | SFT on teacher and human verdicts → RL against human preference labels |
 | Image model (Qwen-Image-2.1) | Product LoRA → preference optimization (Diffusion-DPO or Flow-GRPO) |
 
@@ -300,5 +321,7 @@ All of them run in one harness (`src/c2a/eval/`, built on Inspect AI plus custom
 - Which models this Tinker account can train (Qwen3.8-27B?), Tinker pricing, and the checkpoint export format for vLLM.
 - Licenses of the public benchmarks for commercial use.
 - Decision-1.0 model license, input/output format and training recipe (the HF card and vllm-sr.ai blog were not reachable from this environment).
+- **TypeSafe's terms on using Jev outputs to train our decider.** `c2a label export` leaves out Jev-only labels unless `--include-jev-only` is passed.
+- Jev pricing and rate limits for about 1–2M products plus pairs. This sizes the `--max-requests` budgets.
 - AC2 SDK/config specifics (the docs were not reachable from this environment; the cookbook structure is used as the template).
 - Legal sign-off on each tier-B/C store before it is enabled in `registry.yaml`.

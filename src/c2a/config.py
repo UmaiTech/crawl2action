@@ -34,10 +34,19 @@ class Models(BaseModel):
     embedding: str = "Qwen/Qwen3-Embedding-0.6B"
 
 
+class Labeler(BaseModel):
+    """Hosted Jev (TypeSafe System One). API key comes from TYPESAFE_API_KEY."""
+
+    provider: str = "typesafe"
+    base_url: str = "https://api.typesafe.ai"
+    model: str = "jev-latest"
+
+
 class Settings(BaseModel):
     paths: Paths = Field(default_factory=Paths)
     budgets: Budgets = Field(default_factory=Budgets)
     models: Models = Field(default_factory=Models)
+    labeler: Labeler = Field(default_factory=Labeler)
     locales: list[str] = Field(
         default_factory=lambda: ["sv-SE", "en-GB", "es-ES", "en-US", "en-CA", "fr-CA"]
     )

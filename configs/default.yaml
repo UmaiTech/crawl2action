@@ -15,3 +15,7 @@ models:
   image: Qwen/Qwen-Image-2.1
   embedding: Qwen/Qwen3-Embedding-0.6B
 locales: [sv-SE, en-GB, es-ES, en-US, en-CA, fr-CA]
+labeler:                               # hosted Jev (TypeSafe System One); key: TYPESAFE_API_KEY
+  provider: typesafe
+  base_url: https://api.typesafe.ai
+  model: jev-latest

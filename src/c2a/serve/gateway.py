@@ -10,7 +10,8 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from c2a.decide.backends import KeywordDecider
-from c2a.decide.base import Decider
+from c2a.decide.base import Decider, decide
+from c2a.decide.systemone import SystemOneRequest, SystemOneResponse
 from c2a.graders.rec import constraint_violations, hallucinated_ids
 from c2a.index import Retriever
 from c2a.schemas import (
@@ -55,8 +56,12 @@ def create_app(
         return RecResponse(items=[it for it in items if it.product_id not in bad][: req.k])
 
     @app.post("/decide", response_model=DecisionResult)
-    def decide(req: DecisionRequest) -> DecisionResult:
-        return decider.decide(req)
+    def decide_one(req: DecisionRequest) -> DecisionResult:
+        return decide(decider, req.evidence, req.question, req.labels)
+
+    @app.post("/v1/systemone", response_model=SystemOneResponse)
+    def systemone(req: SystemOneRequest) -> SystemOneResponse:
+        return decider.ask(req)
 
     @app.post("/generate/text")
     def generate_text() -> None:

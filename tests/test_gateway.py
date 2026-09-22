@@ -49,3 +49,21 @@ def test_health_and_decide():
     assert client.get("/health").json() == {"status": "ok"}
     res = client.post("/decide", json={"evidence": "e", "question": "q", "labels": ["x", "y"]})
     assert res.status_code == 200 and abs(sum(res.json()["probs"].values()) - 1) < 1e-9
+
+
+def test_systemone_passthrough():
+    client = TestClient(create_app(InMemoryRetriever(PRODUCTS)))
+    body = {
+        "state": "wool socks",
+        "questions": {
+            "vertical": {
+                "type": "choice",
+                "criteria": {"apparel": "socks and clothes", "home": None},
+            },
+            "bundle": {"type": "noul"},
+        },
+    }
+    res = client.post("/v1/systemone", json=body)
+    assert res.status_code == 200
+    answers = res.json()["answers"]
+    assert answers["vertical"]["choice"] == "apparel" and answers["bundle"]["type"] == "noul"

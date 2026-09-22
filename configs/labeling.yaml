@@ -1,0 +1,9 @@
+# Confidence gates for Jev labels. Tune against the human-verified gold set (M2).
+thresholds:
+  min_confidence: 0.6     # choice/score answer confidence
+  min_top_prob: 0.7       # choice/score top probability
+  noul_min: 0.85          # yes/no: max(p, 1-p)
+  per_question:
+    restricted: {noul_min: 0.95}      # compliance-relevant: escalate more
+    contains_pii: {noul_min: 0.95}
+    page_type: {min_top_prob: 0.8}    # gates Firecrawl /extract spend

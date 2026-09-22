@@ -1,0 +1,12 @@
+# Level-1 product verticals (aligned with Google Product Taxonomy top levels we care about).
+# Level-2 categories per vertical are added in M1 from the official taxonomy file.
+apparel: Clothing, shoes and accessories
+beauty: Cosmetics, skincare, hair care and fragrance
+health: Health, personal care, supplements and pharmacy
+electronics: Consumer electronics, computers, phones and accessories
+home: Furniture, home decor, bedding, kitchen and garden
+grocery: Food, beverages and household consumables
+sports: Sporting goods and outdoor equipment
+toys: Toys, games and baby gear
+gifts: Gifts, stationery and novelty items
+other: Anything that does not fit the verticals above

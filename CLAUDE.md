@@ -11,4 +11,7 @@
 - Money is integer minor units + ISO currency.
 - Graders are the single source of truth for quality: RL rewards (`train/rewards.py`), evals and
   serving guards all call them.
+- Decisions use the System One contract (`decide/systemone.py`): hosted Jev labels data, and our
+  post-trained decider serves the same API. Bump a question set's version whenever a question changes.
+- Decider training exports leave out Jev-only labels unless TypeSafe's terms allow training on them.
 - Never train on files containing `c2a.bench.CANARY`.

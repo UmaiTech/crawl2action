@@ -39,9 +39,19 @@ uv run c2a train rl  --config configs/train/rl_student_rank_grpo.yaml
 uv run c2a train opd --config configs/train/opd_reranker.yaml
 ```
 
+## Labeling with Jev
+Scraped products are classified and labeled by hosted **Jev** (TypeSafe System One) through `c2a label`. Uncertain labels are escalated to the teacher and then to human review.
+```bash
+export TYPESAFE_API_KEY=...
+uv run c2a label run --input data/products.jsonl --qset product_v1 --max-requests 100
+uv run c2a label export --run-dir data/labels/product_v1 --kind gold --out data/gold/product.jsonl
+```
+Add `--dry-run` to preview a request without calling the API, or `--backend keyword` to run offline.
+
 ## Layout
 - `src/c2a/sources`: registry, compliance, Shopify/UCP/Firecrawl ingesters
-- `src/c2a/graders`, `src/c2a/decide`: shared by evaluation, RL rewards and serving guards
+- `src/c2a/graders`, `src/c2a/decide`: shared by evaluation, RL rewards and serving guards (`decide` uses the System One contract)
+- `src/c2a/labeling`: Jev question sets, confidence gating, escalation, cache, exports
 - `src/c2a/train`: data formats, rewards, `tinker/` loops, `fallback/` (Modal), `ac2/`
 - `src/c2a/bench`, `src/c2a/eval`: C2A-Bench and the benchmark harness
 - `src/c2a/serve`: gateway, vLLM and image Modal apps
