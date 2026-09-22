@@ -4,7 +4,7 @@
 The `crawl2action` repo is empty apart from a README and LICENSE. The goal is one pipeline that:
 1. crawls product catalogs from popular e-commerce sites in SE, UK, ES, US and CA using **Firecrawl**, plus **UCP catalog endpoints** and open datasets;
 2. turns that data into training and eval sets for **pre-checkout recommendations** (search/browse/PDP), **post-checkout recommendations** (cross-sell, replenishment), **text generation** (product descriptions, titles, ads, localized copy) and **image generation** (product and lifestyle visuals);
-3. post-trains a **student LLM** on **Modal** with TRL SFT + GRPO for now, with **Applied Compute AC2** as a later drop-in behind the same trainer interface;
+3. post-trains a **student LLM** on **Modal** with the current recipe (cold-start SFT → reward modelling with human preferences, rubrics and GenRM → GRPO-family RL → on-policy distillation) for now, with **Applied Compute AC2** as a later drop-in behind the same trainer interface;
 4. serves the models on **Modal**.
 
 Decisions confirmed with the user:
@@ -48,7 +48,10 @@ src/c2a/
   graders/              # programmatic + LLM-judge graders shared by eval and RL
   train/
     base.py             # Trainer interface: submit(dataset, config) -> run_id; export(run_id) -> HF/LoRA weights
-    modal_trl.py        # PRIMARY: TRL SFT + GRPO on Modal H100/H200 (LoRA, vLLM rollouts)
+    sft.py              # TRL cold-start SFT / DPO baselines (Modal)
+    reward/             # preference-labelling app, rubric generation, GenRM training
+    rl/                 # verl on Modal: GRPO/DAPO/GSPO losses, Rank-GRPO advantage, TIS correction
+    opd.py              # on-policy distillation + self-distillation
     ac2/                # LATER: AC2 project (added once access is granted)
   eval/                 # offline eval harness → reports (parquet + HTML summary)
   serve/
@@ -97,20 +100,73 @@ Target about 50 stores in 6–8 verticals (apparel, beauty, electronics, home, g
 - RL prompts are the same tasks with ground truth attached to the graders.
 - Frozen eval sets are held out by **store** and by **time** and are versioned.
 
-## 3. Training
-- **Stage 1 SFT (LoRA → optional full FT):** teacher-distilled, grader-filtered data. Uses a task mix config, trains 1–2 epochs, and checks formatting/JSON validity.
-- **Stage 2 RL (GRPO-style) with graders as rewards.** The reward is a weighted blend of programmatic metrics and the LLM judge, with hard penalties for invalid JSON, hallucinated IDs and unfaithful claims.
-- **Primary path, all on Modal (for now):** `train/modal_trl.py` runs SFT and GRPO with TRL + PEFT (LoRA) on Modal GPUs.
-  - SFT runs on 1–2× H100.
-  - GRPO for the 27B model runs on multi-GPU H100/H200, with vLLM generating rollouts (TRL `use_vllm`).
-  - Checkpoints go to a Modal Volume, and runs are tracked in W&B or MLflow.
-  - Iterate first on a small proxy student (the smallest current Qwen instruct model), then scale to 27B.
-- **AC2 later:** the `Trainer` interface (`train/base.py`) and graders are platform-neutral. Once AC2 access arrives, add `train/ac2/` following the cookbook's `tau2bench` / `dapo-math-check` patterns and switch by config. No task or grader code changes.
-- **Image LoRA (optional):** fine-tune Qwen-Image-2.1 on product photos for studio-style fidelity (on Modal).
-- **Export:** HF-format weights / LoRA adapters, pushed to a Modal Volume or a private HF repo. Every run records its config, data version and eval report.
+## 3. Post-training (state of the art as of Sep 2026)
+The design follows the **sparse-to-dense reward principle** (Microsoft Research, May 2026):
+- Spend **sparse, outcome-level reward** (RL) on the model best able to explore with it.
+- Pass the resulting behaviour to the deployed model through **dense, token-level supervision**, meaning on-policy distillation (OPD).
+- Run student-side RL only after that distillation step.
+
+Qwen3, GLM-5 and MiMo all use OPD in their post-training pipelines. Running plain GRPO directly on a cold student wastes the labelled signal on the least-prepared policy.
+
+**Model roles**
+| Role | Model | Why |
+|---|---|---|
+| Frontier teacher / data generator / rubric writer | Kimi K3 or Qwen 3.8-Max (hosted API) | Best quality. It is only used through text outputs, because its tokenizer differs from the student's, so it cannot provide token-level logprobs for OPD |
+| **Main model (RL'd)** | Qwen 3.6-27B (self-hosted on Modal) | Serves copy, image briefs and conversational recommendations. It is also the same-tokenizer teacher for OPD into the fast model |
+| Fast reranker (optional) | A small Qwen (about 4–9B, same tokenizer family) | High-QPS `/recommend`. Trained with OPD from the RL'd 27B model |
+| Reward model / judge | A small Qwen trained as a generative reward model (GenRM) | Cheap, fast reward for RL. It is calibrated against Kimi K3 and human labels |
+
+**Stages** (every stage is a separate, resumable Modal job that writes a versioned checkpoint and an eval report)
+1. **Cold-start SFT (off-policy distillation).**
+   - Train on Kimi K3 outputs that passed the graders (rejection sampling), with a short reasoning trace plus the final JSON answer.
+   - The goal is a formatted, grounded starting policy rather than peak quality.
+   - LoRA with high rank, or full fine-tuning if the budget allows.
+2. **Reward modelling (the RLHF part).**
+   - **Human preferences:** a small labelling UI (a Modal web app) collects pairwise comparisons and rubric scores on copy, recommendation explanations and images. Raters are internal, with native speakers for sv, es and fr.
+   - **Rubrics as Rewards:** Kimi K3 writes a *per-instance rubric* for each prompt, grounded in product attributes, locale, brand voice and constraints. The judge scores each rubric item. This gives a reward for tasks that have no single correct answer.
+   - **GenRM:** a small Qwen is trained (SFT, then RL) to produce a rubric-grounded verdict. It is validated against held-out human labels, and the target is ≥80% agreement before it is used as a reward.
+   - **Implicit feedback:** production clicks, add-to-cart and purchase events feed into the reward-model data. Recommendation changes are checked offline with counterfactual evaluation (IPS/DR estimators) before any A/B test.
+3. **RL on the 27B (RLVR plus rubric rewards).** This uses the modern GRPO family:
+   - **Loss fixes:** DAPO-style clip-higher, dynamic sampling that drops groups whose rollouts all score the same, token-level loss, and overlong-response shaping. Dr.GRPO-style removal of length and std normalization.
+   - **Sequence-level importance ratio (GSPO)**, needed once the student is a mixture-of-experts model.
+   - **Truncated or masked importance sampling** to correct for the mismatch between the vLLM sampler and the trainer.
+   - **Rank-GRPO** (ICLR 2026) for recommendation lists. Each rank position is its own action with its own reward, which trains better than one sequence-level NDCG score.
+   - **Rewards by task:**
+     - recommendations: verifiable rewards (NDCG and Recall against held-out purchases, hard constraints, product ID in the candidate set, valid JSON);
+     - copy: attribute-faithfulness checks, rubric scores from GenRM, and a language-ID gate;
+     - image briefs: schema validity plus a VLM product-fidelity score on the rendered image.
+   - **Guards against reward hacking:** KL anchor to the reference model, length control, a judge ensemble, a canary set scored by a *different* judge than the one used for training, and weekly human audits of the highest-reward samples.
+4. **On-policy distillation from the RL'd 27B into the fast reranker.**
+   - The fast model samples; the 27B scores every token by reverse KL. This is dense and much more step-efficient than GRPO.
+   - Start with a short forward-KL warmup, then pure OPD.
+   - Optionally, finish with a short round of student RL once the student has caught up.
+5. **On-policy self-distillation (optional, cheap boost).**
+   - The *same* model, given privileged context (the ground-truth next purchase, the full attribute sheet, the rubric), acts as the teacher for its own unprivileged rollouts.
+   - This gives a dense signal without another model (following ROSD and Self-Distilled Policy Gradient, 2026).
+6. **Continual loop.** Every N weeks, new crawl data and production feedback go through stages 2→3→4, gated by the frozen evals (M5).
+
+**Images (optional track).**
+- A LoRA on Qwen-Image-2.1 for product fidelity.
+- Then preference optimization for the diffusion model (Diffusion-DPO or Flow-GRPO), using human image preferences plus the VLM product-fidelity reward.
+
+**Frameworks on Modal (all behind `train/base.py`):**
+- **TRL + PEFT** for cold-start SFT, GenRM SFT and DPO-style preference baselines.
+- **verl** for GRPO/DAPO/GSPO, Rank-GRPO (custom advantage function) and OPD. It has the most complete support for asynchronous rollouts with LoRA adapter-only weight sync, and uses vLLM for rollouts.
+  - Switch to TRL's async trainer later if it reaches parity.
+  - Reconsider slime or prime-rl if the student becomes a mixture-of-experts model.
+- **GPUs:** a single H100 for proxy-scale runs; multi-GPU H100/H200 (Modal clustered functions) for 27B RL.
+- **Storage and tracking:** checkpoints on a Modal Volume, W&B for runs, and every run pinned to a data and grader version.
+- **Scale-up path:** iterate first on a small proxy (about 4B) with the full recipe, then scale to 27B.
+- **AC2 later:** its console for inspecting rollouts, grader iteration and support for self-distillation line up with stages 3–5. Once access arrives, add `train/ac2/` (following the cookbook's `tau2bench` / `dapo-math-check` pattern) and switch by config. No task or grader code changes.
+
+**Export.** HF-format weights and LoRA adapters are saved to a Modal Volume or a private HF repo, together with the config, data version, grader version and eval report.
+
+**Technique watch.** `docs/POST_TRAINING_NOTES.md` is reviewed every quarter. Any new method is added as a new `Trainer` or advantage-function plug-in and must beat the current recipe on the frozen evals before it replaces it.
 
 ## 4. Evaluation
-- The `c2a eval` CLI runs base Qwen 3.6-27B, the SFT checkpoint, the RL checkpoint and the teacher on the frozen eval sets.
+- The `c2a eval` CLI runs base Qwen 3.6-27B, the SFT checkpoint, the RL checkpoint, the OPD fast model and the teacher on the frozen eval sets.
+- **Eval judges are separate from reward judges** (a different model plus a human sample), so RL cannot overfit to the scorer.
+- **Recommendations** are also scored with counterfactual (IPS/DR) estimates on logged production traffic before any A/B test.
 - Reports: per-task metrics, per-locale breakdown, cost/latency, and a small human spot-check sample.
 - Ship gate: the student beats base and reaches ≥90% of teacher quality on the rec and copy tasks, with a hallucinated-ID rate under 0.5%.
 
@@ -123,7 +179,8 @@ Target about 50 stores in 6–8 verticals (apparel, beauty, electronics, home, g
 1. **M0 skeleton:** repo layout, schemas, CLI, Modal app stubs, CI (ruff + pytest).
 2. **M1 data:** registry and discovery, Shopify/UCP/Firecrawl ingestion for about 10 stores, open-dataset loaders, normalization, index.
 3. **M2 datasets and graders:** all task builders, teacher distillation with a cost cap, frozen evals, baseline eval of base model vs teacher.
-4. **M3 training on Modal:** TRL SFT, then GRPO, on the proxy model first and then on 27B. (Optional M3b: port to AC2 once access arrives.)
+4. **M3 post-training on Modal:** cold-start SFT → GenRM + rubrics → Rank-GRPO/DAPO RL → OPD into the fast reranker, on the proxy model first and then on 27B. (Optional M3b: port to AC2 once access arrives.)
+   - **M3a** runs alongside M3 and collects human preferences through the labelling app.
 5. **M4 serving:** vLLM + image + gateway on Modal, load test.
 6. **M5 feedback loop:** logging → dataset refresh → retrain schedule.
 
