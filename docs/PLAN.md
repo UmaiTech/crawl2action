@@ -45,6 +45,7 @@ src/c2a/
     teacher.py          # teacher API client (Kimi K3 / Qwen-Max), batch, cache, cost cap
     splits.py           # held-out splits by store AND by time to avoid leakage
   graders/              # programmatic + LLM-judge graders shared by eval and RL
+  decide/               # decide(evidence, question, labels) -> probs; Decision-1.0-style calibrated classifiers
   train/
     base.py             # Trainer interface: submit(dataset, config) -> run_id; export(run_id) -> HF/LoRA weights
     tinker/             # PRIMARY: SFT, RLHF, RL (custom Rank-GRPO/DAPO losses), OPD loops on Tinker
@@ -59,7 +60,8 @@ src/c2a/
   serve/
     llm.py              # Modal + vLLM, OpenAI-compatible, --enable-lora for per-task adapters
     image.py            # Modal + diffusers Qwen-Image-2.1 (+ optional product LoRA)
-    gateway.py          # FastAPI on Modal: /recommend, /cross-sell, /generate/text, /generate/image, /feedback
+    gateway.py          # thin FastAPI on Modal: /recommend, /cross-sell, /generate/text, /generate/image, /feedback
+    router/             # vLLM Semantic Router config: signals, decisions, model pool
   cli.py                # c2a discover|crawl|build|train|bench|eval|deploy
 configs/                # per-run YAML (model, tasks, mix ratios, budgets)
 tests/
@@ -101,6 +103,50 @@ Target about 50 stores in 6–8 verticals (apparel, beauty, electronics, home, g
 - SFT data comes from teacher-distilled answers, filtered by the same graders (rejection sampling).
 - RL prompts are the same tasks with ground truth attached to the graders.
 - Frozen eval sets are held out by **store** and by **time** and are versioned.
+
+## 2b. Decision layer (inspired by vLLM Semantic Router and the Decision-1.0 models)
+**What we borrow**
+- vLLM Semantic Router (Apache 2.0) composes cheap *signals* into routing *decisions* in front of several models:
+  - heuristics such as keywords, language and context length;
+  - neural classifiers for domain, PII, jailbreak attempts and complexity;
+  - embedding similarity.
+- Its **Decision-1.0** models (Lux-9B on Qwen3.5-9B; Nox-4B, Sol-2B; the earlier Kev-9B) take *evidence + a question + labels defined at request time* and return a decision **with probabilities**.
+- Two ideas carry over:
+  1. **Framing sub-decisions as small, calibrated classification calls** instead of free-form generation.
+  2. **A mixture-of-models router** in front of the serving tiers.
+
+**Where decision calls go in crawl2action.** One `decide(evidence, question, labels) -> {label: prob}` interface in `src/c2a/decide/`:
+| Decision | Labels (set at request time) | Used for |
+|---|---|---|
+| Query↔product relevance | exact / substitute / complement / irrelevant (ESCI) | Candidate filtering, pre-checkout reranking features, and the reward for Rec-Pre |
+| Cross-sell type | complement / substitute / unrelated | Post-checkout recommendations. A substitute penalty guards against suggesting an item the customer just bought |
+| Claim faithfulness | supported / contradicted / not-in-attributes (per claim) | Copy grader and reward. The **probabilities give a denser, calibrated reward** than a 1–10 judge score |
+| Shopper intent / stage | browse / compare / buy-now / post-purchase / support | Choosing the recommendation strategy, and routing |
+| Constraint check | satisfies / violates, for each price, size, stock or locale constraint | Hard gate at serving time, and a reward penalty |
+| Safety / compliance | PII / unsafe product / off-policy content | Crawl scrubbing, and output guard at serving time |
+
+**Model**
+- **M2 bake-off for the decider:**
+  - Decision-1.0-Lux-9B as it ships (verify its license and model card first);
+  - the same model fine-tuned on our labels (ESCI and C2A gold subset, via Tinker);
+  - a small same-family model distilled from the teacher.
+- Metrics: weighted accuracy, **calibration (ECE and Brier score)** and latency.
+- The winner does three jobs:
+  - a **fast grader and reward model** in the RL loop (a better fit than a free-form judge for any grader that is really a classification);
+  - a **serving-time guard**;
+  - a **router signal**.
+
+**Serving router.** vLLM Semantic Router (Envoy ext_proc) sits in front of the Modal endpoints. It routes each request, based on signals and decider outputs, to:
+- the fast reranker (high-QPS recommendations);
+- Qwen3.8-27B, with reasoning turned on only when the complexity signal calls for it (the router's "When to Reason" idea);
+- the image pipeline.
+
+PII and jailbreak signals are blocked at the edge. This replaces the hand-written dispatch in `serve/gateway.py`, which is kept only as a thin API layer.
+
+**Benchmark.** C2A-Bench gains a **Decide track**:
+- Covers all the decision types above, per locale.
+- Scored with weighted accuracy per category (modelled on how the Decision-1.0 models are evaluated) plus ECE/Brier.
+- Also measures router quality: cost and latency saved at equal quality, compared with sending everything to the 27B model.
 
 ## 3. Post-training (state of the art as of Sep 2026)
 The design follows the **sparse-to-dense reward principle** (Microsoft Research, May 2026):
@@ -203,6 +249,7 @@ All of them run in one harness (`src/c2a/eval/`, built on Inspect AI plus custom
   4. **Localize:** translate and adapt copy between locales while preserving attributes, units, sizes and currency.
   5. **Image:** briefs rendered by the image model. Metrics: VLM product-fidelity score, text/logo accuracy, human preference.
   6. **Conversational / agentic:** multi-turn shopping assistant in a simulated store over our catalog (UCP-style search and cart tools), scored on task success, constraint adherence and turns taken.
+  7. **Decide:** calibrated decisions (relevance, complement vs substitute, claim faithfulness, intent, constraints). Metrics: weighted accuracy, ECE, Brier score, plus router cost and latency savings.
 - **Gold subset:** about 500 items per track and locale, verified by native-speaker annotators through the labelling app. It is used to calibrate the automatic judges (report judge–human agreement), and the headline numbers come from it.
 - **Hygiene:**
   - rules against data contamination (dedup C2A-Bench against every training source using MinHash);
@@ -212,7 +259,7 @@ All of them run in one harness (`src/c2a/eval/`, built on Inspect AI plus custom
 - **Leaderboard:** each run's report (parquet + HTML) is compared against all baselines: base candidates, teacher, SFT, RL, OPD. It includes per-locale and per-vertical breakdowns plus cost and latency.
 
 **4c. Gates**
-- **M2 bake-off:** pick the student (Qwen3.8-27B vs Inkling-Small), the teacher and the image model on C2A-Bench (gold subset) plus the public benchmarks.
+- **M2 bake-off:** pick the student (Qwen3.8-27B vs Inkling-Small), the teacher, the image model and the decider (Decision-1.0-Lux-9B as shipped vs fine-tuned vs distilled) on C2A-Bench (gold subset) plus the public benchmarks.
 - **Ship gate:**
   - the student beats its base model on every C2A-Bench track;
   - it reaches ≥90% of teacher quality on the Rec and Copy tracks;
@@ -243,5 +290,6 @@ All of them run in one harness (`src/c2a/eval/`, built on Inspect AI plus custom
 - Exact HF model IDs and licenses for Qwen3.8-27B, Inkling-Small, Qwen-Image-2.1 and FLUX.2, plus Kimi K3 / GLM-5.3 API access and pricing.
 - Which models this Tinker account can train (Qwen3.8-27B?), Tinker pricing, and the checkpoint export format for vLLM.
 - Licenses of the public benchmarks for commercial use.
+- Decision-1.0 model license, input/output format and training recipe (the HF card and vllm-sr.ai blog were not reachable from this environment).
 - AC2 SDK/config specifics (the docs were not reachable from this environment; the cookbook structure is used as the template).
 - Legal sign-off on each tier-B/C store before it is enabled in `registry.yaml`.
