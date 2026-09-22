@@ -1,0 +1,369 @@
+# Store registry for crawl2action. See docs/PLAN.md section 1.
+version: 1
+notes: 'Seed candidates only. Platform/UCP are verified by `c2a discover` (M1); tos_status
+  must be set to ''approved'' after legal review before enabled: true takes effect.'
+stores:
+- id: happysocks
+  name: Happy Socks
+  domain: www.happysocks.com
+  country: SE
+  locale: sv-SE
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - apparel
+- id: djerfavenue
+  name: Djerf Avenue
+  domain: djerfavenue.com
+  country: SE
+  locale: sv-SE
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - apparel
+- id: cdlp
+  name: CDLP
+  domain: cdlp.com
+  country: SE
+  locale: sv-SE
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - apparel
+- id: apotea
+  name: Apotea
+  domain: www.apotea.se
+  country: SE
+  locale: sv-SE
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - health
+  - beauty
+- id: lyko
+  name: Lyko
+  domain: lyko.com
+  country: SE
+  locale: sv-SE
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - beauty
+- id: elgiganten
+  name: Elgiganten
+  domain: www.elgiganten.se
+  country: SE
+  locale: sv-SE
+  platform: unknown
+  tier: C
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - electronics
+- id: cdon
+  name: CDON
+  domain: cdon.se
+  country: SE
+  locale: sv-SE
+  platform: unknown
+  tier: C
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - marketplace
+- id: gymshark
+  name: Gymshark
+  domain: www.gymshark.com
+  country: GB
+  locale: en-GB
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - apparel
+- id: represent
+  name: Represent
+  domain: representclo.com
+  country: GB
+  locale: en-GB
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - apparel
+- id: huel
+  name: Huel
+  domain: huel.com
+  country: GB
+  locale: en-GB
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - grocery
+  - health
+- id: oliverbonas
+  name: Oliver Bonas
+  domain: www.oliverbonas.com
+  country: GB
+  locale: en-GB
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - home
+  - apparel
+- id: argos
+  name: Argos
+  domain: www.argos.co.uk
+  country: GB
+  locale: en-GB
+  platform: unknown
+  tier: C
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - marketplace
+- id: johnlewis
+  name: John Lewis
+  domain: www.johnlewis.com
+  country: GB
+  locale: en-GB
+  platform: unknown
+  tier: C
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - department
+- id: hawkers
+  name: Hawkers
+  domain: www.hawkersco.com
+  country: ES
+  locale: es-ES
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - apparel
+- id: scalpers
+  name: Scalpers
+  domain: scalperscompany.com
+  country: ES
+  locale: es-ES
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - apparel
+- id: mrwonderful
+  name: Mr Wonderful
+  domain: www.mrwonderfulshop.es
+  country: ES
+  locale: es-ES
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - home
+  - gifts
+- id: pccomponentes
+  name: PcComponentes
+  domain: www.pccomponentes.com
+  country: ES
+  locale: es-ES
+  platform: unknown
+  tier: C
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - electronics
+- id: elcorteingles
+  name: El Corte Inglés
+  domain: www.elcorteingles.es
+  country: ES
+  locale: es-ES
+  platform: unknown
+  tier: C
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - department
+- id: allbirds
+  name: Allbirds
+  domain: www.allbirds.com
+  country: US
+  locale: en-US
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - apparel
+- id: glossier
+  name: Glossier
+  domain: www.glossier.com
+  country: US
+  locale: en-US
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - beauty
+- id: brooklinen
+  name: Brooklinen
+  domain: www.brooklinen.com
+  country: US
+  locale: en-US
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - home
+- id: bombas
+  name: Bombas
+  domain: bombas.com
+  country: US
+  locale: en-US
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - apparel
+- id: bestbuy
+  name: Best Buy
+  domain: www.bestbuy.com
+  country: US
+  locale: en-US
+  platform: unknown
+  tier: C
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - electronics
+- id: target
+  name: Target
+  domain: www.target.com
+  country: US
+  locale: en-US
+  platform: unknown
+  tier: C
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - department
+- id: kotn
+  name: Kotn
+  domain: kotn.com
+  country: CA
+  locale: en-CA
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - apparel
+- id: frankandoak
+  name: Frank And Oak
+  domain: www.frankandoak.com
+  country: CA
+  locale: en-CA
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - apparel
+- id: knix
+  name: Knix
+  domain: knix.com
+  country: CA
+  locale: en-CA
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - apparel
+- id: tentree
+  name: Tentree
+  domain: www.tentree.com
+  country: CA
+  locale: en-CA
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - apparel
+- id: peacecollective
+  name: Peace Collective
+  domain: peacecollective.ca
+  country: CA
+  locale: en-CA
+  platform: unknown
+  tier: B
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - apparel
+- id: canadiantire
+  name: Canadian Tire
+  domain: www.canadiantire.ca
+  country: CA
+  locale: en-CA
+  platform: unknown
+  tier: C
+  tos_status: unreviewed
+  method: firecrawl
+  enabled: false
+  verticals:
+  - department

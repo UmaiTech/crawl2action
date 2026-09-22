@@ -1,0 +1,12 @@
+# On-policy distillation: RL'd student (teacher) -> fast reranker. Same tokenizer family required.
+name: opd-reranker
+stage: opd
+platform: tinker
+base_model: Qwen/Qwen3.5-4B
+teacher_model: Qwen/Qwen3.8-27B       # replace with the RL'd checkpoint path from Tinker
+dataset: data/train/opd_rec.jsonl
+kl_coef: 1.0
+group_size: 4
+batch_size: 16
+learning_rate: 5.0e-5
+steps: 50

@@ -1,0 +1,10 @@
+# Decider post-training step 1: SFT on ESCI + C2A gold labels (then RL with reward: decide).
+name: sft-decider
+stage: sft
+platform: tinker
+base_model: llm-semantic-router/Decision-1.0-Lux-9B   # if not trainable on Tinker, use a same-family Qwen base
+dataset: data/train/sft_decider.jsonl
+lora_rank: 32
+learning_rate: 1.0e-4
+batch_size: 64
+steps: 50

@@ -127,7 +127,7 @@ Target about 50 stores in 6–8 verticals (apparel, beauty, electronics, home, g
 
 **Model**
 - **M2 bake-off for the decider:**
-  - Decision-1.0-Lux-9B as it ships (verify its license and model card first);
+  - Decision-1.0-Lux-9B as it ships (baseline only; verify its license and model card first);
   - the same model fine-tuned on our labels (ESCI and C2A gold subset, via Tinker);
   - a small same-family model distilled from the teacher.
 - Metrics: weighted accuracy, **calibration (ECE and Brier score)** and latency.
@@ -155,6 +155,15 @@ The design follows the **sparse-to-dense reward principle** (Microsoft Research,
 - Run student-side RL only after that distillation step.
 
 Qwen3, GLM-5 and MiMo all use OPD in their post-training pipelines. Running plain GRPO directly on a cold student wastes the labelled signal on the least-prepared policy.
+
+**Every model we serve is post-trained by us.** Off-the-shelf checkpoints are only starting points and bake-off baselines.
+| Model | How we post-train it (Tinker; Modal fallback) |
+|---|---|
+| Student (Qwen3.8-27B or Inkling-Small) | Cold-start SFT → RLHF / RL with rubric, Rank-GRPO and verifiable rewards → optional self-distillation |
+| Fast reranker | On-policy distillation from the RL-trained student → optional student RL |
+| Decider (starts from Decision-1.0-Lux-9B or a same-family small model) | SFT on ESCI plus C2A gold labels → RL with a calibration-aware reward (log-loss / Brier score) |
+| GenRM judge | SFT on teacher and human verdicts → RL against human preference labels |
+| Image model (Qwen-Image-2.1) | Product LoRA → preference optimization (Diffusion-DPO or Flow-GRPO) |
 
 **Model roles (checked against releases as of 22 Sep 2026)**
 
@@ -273,7 +282,7 @@ All of them run in one harness (`src/c2a/eval/`, built on Inspect AI plus custom
 - `serve/gateway.py`: FastAPI. It retrieves candidates from LanceDB, calls the LLM, validates output against the pydantic schema, runs the image brief through the image model, and logs requests and feedback (clicks, add-to-cart) to parquet for the next training round (continual learning on AC2).
 
 ## Milestones
-1. **M0 skeleton:** repo layout, schemas, CLI, Modal app stubs, CI (ruff + pytest).
+1. **M0 skeleton (done):** repo layout, schemas, CLI, compliance, Shopify parser, graders, decide interface, training data formats, rewards and advantage estimators, Tinker SFT/RL/OPD loops, gateway, Modal stubs, CI (ruff + pytest).
 2. **M1 data:** registry and discovery, Shopify/UCP/Firecrawl ingestion for about 10 stores, open-dataset loaders, normalization, index.
 3. **M2 datasets, graders and benchmarks:** task builders, teacher distillation with a cost cap, public benchmark adapters, C2A-Bench v0 with a gold subset, and the **model bake-off** (student, teacher and image model).
 4. **M3 post-training on Tinker:** cold-start SFT → GenRM + rubrics → Rank-GRPO/DAPO RL → OPD into the fast reranker, on the proxy model first and then on 27B. (Optional M3b: port to AC2 once access arrives.)

@@ -1,0 +1,15 @@
+{"products": [
+  {"id": 101, "title": "Merino Runner", "handle": "merino-runner", "body_html": "<p>Soft <b>merino</b> sneaker.</p>",
+   "vendor": "Acme", "product_type": "Shoes", "tags": ["sneakers", "wool"],
+   "options": [{"name": "Size"}, {"name": "Color"}],
+   "variants": [
+     {"id": 1001, "title": "42 / Grey", "sku": "MR-42-G", "price": "129.00", "compare_at_price": "149.00", "available": true, "option1": "42", "option2": "Grey"},
+     {"id": 1002, "title": "43 / Grey", "sku": "", "price": "129.00", "compare_at_price": null, "available": false, "option1": "43", "option2": "Grey"}
+   ],
+   "images": [{"src": "https://cdn.example.com/mr.jpg"}]},
+  {"id": 102, "title": "Wool Socks", "handle": "wool-socks", "body_html": "", "vendor": "Acme", "product_type": "Socks",
+   "tags": "socks, wool", "options": [{"name": "Title"}],
+   "variants": [{"id": 1003, "title": "Default Title", "price": "19.99", "available": true, "option1": "Default Title"}],
+   "images": []},
+  {"id": 103, "title": "Broken", "handle": "broken", "variants": []}
+]}

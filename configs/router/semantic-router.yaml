@@ -1,0 +1,24 @@
+# DRAFT vLLM Semantic Router policy for crawl2action (schema to be aligned with the
+# router version we deploy in M4; see https://github.com/vllm-project/semantic-router).
+model_pool:
+  - name: c2a-reranker      # OPD-distilled fast model (high-QPS /recommend)
+    endpoint: ${C2A_RERANKER_URL}
+  - name: c2a-student       # post-trained Qwen3.8-27B (+ task LoRAs)
+    endpoint: ${C2A_STUDENT_URL}
+  - name: c2a-decider       # post-trained decider (calibrated label probabilities)
+    endpoint: ${C2A_DECIDER_URL}
+  - name: c2a-image         # Qwen-Image-2.1 pipeline
+    endpoint: ${C2A_IMAGE_URL}
+signals:
+  - {name: task, type: keyword, source: path}          # /recommend, /generate/text, ...
+  - {name: language, type: language_detection}
+  - {name: complexity, type: classifier}
+  - {name: pii, type: pii_detection}
+  - {name: jailbreak, type: jailbreak_detection}
+decisions:
+  - {when: "jailbreak or pii.high", action: block}
+  - {when: "task == recommend and complexity == low", route: c2a-reranker}
+  - {when: "task == recommend", route: c2a-student, reasoning: auto}
+  - {when: "task == decide", route: c2a-decider}
+  - {when: "task == generate_image", route: c2a-image}
+  - {when: "true", route: c2a-student, reasoning: "complexity == high"}

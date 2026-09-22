@@ -1,0 +1,14 @@
+# RL on recommendation prompts with Rank-GRPO-style advantages + DAPO dynamic sampling.
+name: rl-student-rec-proxy
+stage: rl
+platform: tinker
+base_model: Qwen/Qwen3.5-4B
+dataset: data/train/rl_rec.jsonl
+reward: rec
+advantage: rank_grpo
+drop_zero_variance_groups: true
+group_size: 8
+batch_size: 16
+learning_rate: 4.0e-5
+max_tokens: 512
+steps: 20

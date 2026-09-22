@@ -1,0 +1,11 @@
+# Cold-start SFT on grader-filtered teacher outputs. Start on the proxy model, then 27B.
+name: sft-student-proxy
+stage: sft
+platform: tinker
+base_model: Qwen/Qwen3.5-4B
+dataset: data/train/sft_student.jsonl
+lora_rank: 32
+learning_rate: 1.0e-4
+batch_size: 32
+steps: 20
+save_every: 10
