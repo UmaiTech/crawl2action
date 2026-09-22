@@ -4,20 +4,19 @@
 The `crawl2action` repo is empty apart from a README and LICENSE. The goal is one pipeline that:
 1. crawls product catalogs from popular e-commerce sites in SE, UK, ES, US and CA using **Firecrawl**, plus **UCP catalog endpoints** and open datasets;
 2. turns that data into training and eval sets for **pre-checkout recommendations** (search/browse/PDP), **post-checkout recommendations** (cross-sell, replenishment), **text generation** (product descriptions, titles, ads, localized copy) and **image generation** (product and lifestyle visuals);
-3. post-trains a **student LLM** on **Modal** with the current recipe (cold-start SFT → reward modelling with human preferences, rubrics and GenRM → GRPO-family RL → on-policy distillation) for now, with **Applied Compute AC2** as a later drop-in behind the same trainer interface;
+3. post-trains a **student LLM** on **Tinker** (Thinking Machines; Modal as the self-run fallback) with the current recipe (cold-start SFT → reward modelling with human preferences, rubrics and GenRM → GRPO-family RL → on-policy distillation) for now, with **Applied Compute AC2** as a later drop-in behind the same trainer interface;
 4. serves the models on **Modal**.
 
 Decisions confirmed with the user:
 - **Two model tiers:**
-  - The student is **Qwen 3.6-27B** (dense). It is the model that gets post-trained and served in production on 1–2 H100/H200.
-  - The teacher and judge is **Kimi K3** (2.8T MoE, 104B active) or Qwen 3.8-Max, called through a hosted API. It is used only for generating synthetic data and for grading, never for serving.
-  - Qwen3.8-Flash-Next (multimodal MoE) is an optional later upgrade if image input for the student proves useful.
+  - The student is **Qwen3.8-27B** (dense, multimodal, Aug 2026). It is the model that gets post-trained and served in production on 1–2 H100/H200. **Inkling-Small** competes with it in the bake-off.
+  - The teacher and judge is **Kimi K3** (2.8T MoE, 104B active), GLM-5.3 or Qwen3.8-Max, called through a hosted API. It is used only for generating synthetic data and for grading, never for serving.
 - **Images:** the LLM writes structured image briefs, and a separate image model renders them. That model is **Qwen-Image-2.1** (7B, generation plus editing, 10 reference images), served on Modal. An optional LoRA can be trained on crawled product photos.
 - **Data sources:** a mix of popular regional stores, open datasets and UCP catalog access. Every source goes through robots.txt and ToS gating.
 
 ## Architecture (six stages, each a Modal app plus a `c2a` CLI command)
 ```
-discover → crawl/ingest → normalize+dedupe → build datasets → post-train (Modal: TRL+verl; AC2 later) → eval → serve (Modal)
+discover → crawl/ingest → normalize+dedupe → build datasets → post-train (Tinker; Modal fallback; AC2 later) → eval → serve (Modal)
                                                                   ↑                                     │
                                                                   └─────── production feedback logs ─────┘
 ```
@@ -48,17 +47,20 @@ src/c2a/
   graders/              # programmatic + LLM-judge graders shared by eval and RL
   train/
     base.py             # Trainer interface: submit(dataset, config) -> run_id; export(run_id) -> HF/LoRA weights
-    sft.py              # TRL cold-start SFT / DPO baselines (Modal)
+    tinker/             # PRIMARY: SFT, RLHF, RL (custom Rank-GRPO/DAPO losses), OPD loops on Tinker
+    envs/               # Modal-hosted rollout envs + reward endpoints called from Tinker loops
+    sft.py              # fallback: TRL cold-start SFT / DPO baselines (Modal)
     reward/             # preference-labelling app, rubric generation, GenRM training
-    rl/                 # verl on Modal: GRPO/DAPO/GSPO losses, Rank-GRPO advantage, TIS correction
+    rl/                 # fallback: verl on Modal: GRPO/DAPO/GSPO losses, Rank-GRPO advantage, TIS correction
     opd.py              # on-policy distillation + self-distillation
     ac2/                # LATER: AC2 project (added once access is granted)
-  eval/                 # offline eval harness → reports (parquet + HTML summary)
+  eval/                 # Inspect-based harness: public benchmark adapters + C2A-Bench tracks → reports
+  bench/                # C2A-Bench builder: tracks, gold-set sampling, contamination checks, canary
   serve/
     llm.py              # Modal + vLLM, OpenAI-compatible, --enable-lora for per-task adapters
     image.py            # Modal + diffusers Qwen-Image-2.1 (+ optional product LoRA)
     gateway.py          # FastAPI on Modal: /recommend, /cross-sell, /generate/text, /generate/image, /feedback
-  cli.py                # c2a discover|crawl|build|train|eval|deploy
+  cli.py                # c2a discover|crawl|build|train|bench|eval|deploy
 configs/                # per-run YAML (model, tasks, mix ratios, budgets)
 tests/
 ```
@@ -108,15 +110,20 @@ The design follows the **sparse-to-dense reward principle** (Microsoft Research,
 
 Qwen3, GLM-5 and MiMo all use OPD in their post-training pipelines. Running plain GRPO directly on a cold student wastes the labelled signal on the least-prepared policy.
 
-**Model roles**
-| Role | Model | Why |
-|---|---|---|
-| Frontier teacher / data generator / rubric writer | Kimi K3 or Qwen 3.8-Max (hosted API) | Best quality. It is only used through text outputs, because its tokenizer differs from the student's, so it cannot provide token-level logprobs for OPD |
-| **Main model (RL'd)** | Qwen 3.6-27B (self-hosted on Modal) | Serves copy, image briefs and conversational recommendations. It is also the same-tokenizer teacher for OPD into the fast model |
-| Fast reranker (optional) | A small Qwen (about 4–9B, same tokenizer family) | High-QPS `/recommend`. Trained with OPD from the RL'd 27B model |
-| Reward model / judge | A small Qwen trained as a generative reward model (GenRM) | Cheap, fast reward for RL. It is calibrated against Kimi K3 and human labels |
+**Model roles (checked against releases as of 22 Sep 2026)**
 
-**Stages** (every stage is a separate, resumable Modal job that writes a versioned checkpoint and an eval report)
+The final choice between the two student candidates comes from a **model bake-off in M2**: every candidate runs on C2A-Bench (section 4) before any training money is spent.
+
+| Role | Primary pick | Alternative in the bake-off | Why |
+|---|---|---|---|
+| Frontier teacher / data generator / rubric writer | **Kimi K3** (2.8T MoE, 104B active, Jul 2026) | GLM-5.3 (top open model on the Artificial Analysis index, Sep 2026), Qwen3.8-Max (2.4T) | Best quality. It is only used through text outputs (API), because a different tokenizer rules out token-level OPD |
+| **Main student (RL'd, served)** | **Qwen3.8-27B** (dense, natively multimodal: image and video input, 262K context, Apache 2.0, weights released 13–14 Aug 2026) | **Inkling-Small** (Thinking Machines, 12B active MoE, multimodal, Apache 2.0, Jul 2026) | Qwen3.8-27B replaces the older Qwen3.8-27B. It reads product photos directly and fits on 1× H100 in FP8. Inkling-Small is native to Tinker, and its big sibling Inkling (975B, 41B active) can act as a same-tokenizer OPD teacher entirely inside Tinker |
+| Same-family OPD teacher | The RL'd Qwen3.8-27B (or Qwen3.8-Max, if it is available on Tinker) | Inkling, if Inkling-Small wins the bake-off | Token-level distillation needs the same tokenizer |
+| Fast reranker (optional) | A small model from the same family as the student, distilled with OPD | – | High-QPS `/recommend` |
+| Reward model / judge | A small same-family model trained as a generative reward model (GenRM) | – | Cheap reward for RL, calibrated against Kimi K3 and human labels |
+| Image generation | **Qwen-Image-2.1** (7B, generation and editing, Sep 20 2026) | FLUX.2 (highest raw image quality; check its license for commercial use) | Bake-off on product fidelity and text rendering |
+
+**Stages** (every stage is a separate, resumable Tinker or Modal job that writes a versioned checkpoint and an eval report)
 1. **Cold-start SFT (off-policy distillation).**
    - Train on Kimi K3 outputs that passed the graders (rejection sampling), with a short reasoning trace plus the final JSON answer.
    - The goal is a formatted, grounded starting policy rather than peak quality.
@@ -149,37 +156,80 @@ Qwen3, GLM-5 and MiMo all use OPD in their post-training pipelines. Running plai
 - A LoRA on Qwen-Image-2.1 for product fidelity.
 - Then preference optimization for the diffusion model (Diffusion-DPO or Flow-GRPO), using human image preferences plus the VLM product-fidelity reward.
 
-**Frameworks on Modal (all behind `train/base.py`):**
-- **TRL + PEFT** for cold-start SFT, GenRM SFT and DPO-style preference baselines.
-- **verl** for GRPO/DAPO/GSPO, Rank-GRPO (custom advantage function) and OPD. It has the most complete support for asynchronous rollouts with LoRA adapter-only weight sync, and uses vLLM for rollouts.
-  - Switch to TRL's async trainer later if it reaches parity.
-  - Reconsider slime or prime-rl if the student becomes a mixture-of-experts model.
-- **GPUs:** a single H100 for proxy-scale runs; multi-GPU H100/H200 (Modal clustered functions) for 27B RL.
-- **Storage and tracking:** checkpoints on a Modal Volume, W&B for runs, and every run pinned to a data and grader version.
+**Training platform (all behind `train/base.py`)**
+- **Primary: Tinker (Thinking Machines).**
+  - You write the training loop in Python; Tinker runs it on its distributed GPUs with LoRA, from 1B up to 1T+ parameters, dense or mixture-of-experts, text and vision.
+  - The `tinker-cookbook` has recipes that map directly onto the stages above: chat SFT, DPO and three-stage RLHF (SFT → reward model → RL), RL with verifiable rewards, on-policy and off-policy distillation (single or multiple teachers), and RL with tool use.
+  - Custom losses allow the DAPO/GSPO/Rank-GRPO advantage functions to be written directly.
+  - This removes GPU-cluster work from the project. Modal hosts the parts Tinker doesn't: rollout environments (candidate retrieval, graders, the judge, image rendering for rewards), data jobs and serving.
+  - Trained checkpoints are downloaded as archives (`get_checkpoint_archive_url_from_tinker_path`) to a Modal Volume and served with vLLM.
+- **First task in M3:** list the models this Tinker account can train (the cookbook's server capabilities call) and confirm Qwen3.8-27B is there.
+  - If it isn't yet, use Qwen3.5-27B (documented as supported) or Inkling-Small on Tinker. The Modal fallback below can also train Qwen3.8-27B directly.
+- **Fallback, self-run on Modal:** TRL + PEFT (SFT, DPO, GenRM) and verl (GRPO/DAPO/GSPO, Rank-GRPO, OPD, async vLLM rollouts, LoRA adapter-only sync) on H100/H200 clusters. Use it when a model or loss isn't available on Tinker.
+- **Storage and tracking:** checkpoints on a Modal Volume, W&B for runs, and every run pinned to a data, grader and benchmark version.
 - **Scale-up path:** iterate first on a small proxy (about 4B) with the full recipe, then scale to 27B.
-- **AC2 later:** its console for inspecting rollouts, grader iteration and support for self-distillation line up with stages 3–5. Once access arrives, add `train/ac2/` (following the cookbook's `tau2bench` / `dapo-math-check` pattern) and switch by config. No task or grader code changes.
+- **AC2 later:** add `train/ac2/` (following the cookbook's `tau2bench` / `dapo-math-check` pattern) and switch by config. No task or grader code changes.
 
 **Export.** HF-format weights and LoRA adapters are saved to a Modal Volume or a private HF repo, together with the config, data version, grader version and eval report.
 
 **Technique watch.** `docs/POST_TRAINING_NOTES.md` is reviewed every quarter. Any new method is added as a new `Trainer` or advantage-function plug-in and must beat the current recipe on the frozen evals before it replaces it.
 
-## 4. Evaluation
-- The `c2a eval` CLI runs base Qwen 3.6-27B, the SFT checkpoint, the RL checkpoint, the OPD fast model and the teacher on the frozen eval sets.
-- **Eval judges are separate from reward judges** (a different model plus a human sample), so RL cannot overfit to the scorer.
-- **Recommendations** are also scored with counterfactual (IPS/DR) estimates on logged production traffic before any A/B test.
-- Reports: per-task metrics, per-locale breakdown, cost/latency, and a small human spot-check sample.
-- Ship gate: the student beats base and reaches ≥90% of teacher quality on the rec and copy tasks, with a hallucinated-ID rate under 0.5%.
+## 4. Benchmarks and evaluation
+Benchmarks come in two layers:
+- **public benchmarks**, for comparing with other published work and catching regressions;
+- **C2A-Bench**, a new benchmark built for this project, because none of the public ones measure grounded recommendations and copy on *our* catalogs across SE, UK, ES, US and CA.
+
+All of them run in one harness (`src/c2a/eval/`, built on Inspect AI plus custom scorers) with the `c2a bench` CLI.
+
+**4a. Public benchmarks to adopt** (licenses to be checked for each before use)
+| Area | Benchmark | What it measures for us |
+|---|---|---|
+| Search relevance | **Amazon ESCI / SQID** (130K queries, 2.6M labels in Exact/Substitute/Complement/Irrelevant; en/es/ja; SQID adds images) | Query→product relevance, and substitute-vs-complement judgement (the core of cross-sell) |
+| Session recommendations and text | **Amazon-M2** (KDD Cup 2023; multilingual, includes UK and ES locales) | Next-item prediction and product title generation across locales |
+| Shopping knowledge | **Shopping MMLU** (KDD Cup 2024) and **ECInstruct** (10 tasks, 264K examples, including sequential recommendation and query-product ranking) | Product-concept understanding; guards against regressions from fine-tuning |
+| Shopping agents | **ShoppingBench** (AAAI), **ShoppingComp**, **Shopping Companion** (2026), **ComboShoppingBench** (budget and coupons, 2026), **WebMall** / **ShopGym** | Intent-grounded, multi-step and constrained shopping, preference grounding, and safety-critical product choices |
+| Customer-service style tool use | **τ-bench retail** | Post-checkout flows (returns, exchanges, order questions) |
+| General capability guard | A small fixed suite (instruction following, multilingual, safety) | Catches general regressions caused by domain RL |
+
+**4b. C2A-Bench (built by this project, versioned and frozen per release)**
+- **Construction:**
+  - generated from our crawl plus the open behavioural datasets;
+  - held out **by store and by time** (products and stores never seen in training);
+  - split by locale (sv-SE, en-GB, es-ES, en-US, en-CA, fr-CA) and by vertical.
+- **Tracks:**
+  1. **Rec-Pre:** search, browse and "similar to this product" reranking over 50 candidates. Metrics: NDCG@10, Recall@10, constraint violations, hallucinated-ID rate.
+  2. **Rec-Post:** cross-sell and replenishment. Metrics: complement precision, substitute-confusion rate, co-purchase Recall@k.
+  3. **Copy:** titles, descriptions, bullets, SEO text and ads. Metrics: attribute-faithfulness (every claim checked against attributes), locale/language accuracy, rubric score, human preference win-rate.
+  4. **Localize:** translate and adapt copy between locales while preserving attributes, units, sizes and currency.
+  5. **Image:** briefs rendered by the image model. Metrics: VLM product-fidelity score, text/logo accuracy, human preference.
+  6. **Conversational / agentic:** multi-turn shopping assistant in a simulated store over our catalog (UCP-style search and cart tools), scored on task success, constraint adherence and turns taken.
+- **Gold subset:** about 500 items per track and locale, verified by native-speaker annotators through the labelling app. It is used to calibrate the automatic judges (report judge–human agreement), and the headline numbers come from it.
+- **Hygiene:**
+  - rules against data contamination (dedup C2A-Bench against every training source using MinHash);
+  - a canary string in the benchmark files so any leak into training data can be detected;
+  - a private holdout split that is never used for tuning;
+  - eval judges that differ from the reward judges.
+- **Leaderboard:** each run's report (parquet + HTML) is compared against all baselines: base candidates, teacher, SFT, RL, OPD. It includes per-locale and per-vertical breakdowns plus cost and latency.
+
+**4c. Gates**
+- **M2 bake-off:** pick the student (Qwen3.8-27B vs Inkling-Small), the teacher and the image model on C2A-Bench (gold subset) plus the public benchmarks.
+- **Ship gate:**
+  - the student beats its base model on every C2A-Bench track;
+  - it reaches ≥90% of teacher quality on the Rec and Copy tracks;
+  - hallucinated-ID rate is under 0.5%;
+  - no public benchmark drops by more than 2 points.
+- **Online:** counterfactual (IPS/DR) estimates on logged traffic, then an A/B test.
 
 ## 5. Serving on Modal
-- `serve/llm.py`: vLLM with Qwen 3.6-27B plus task LoRAs (`--enable-lora`), OpenAI-compatible, autoscaling with warm pool, structured JSON output (guided decoding).
+- `serve/llm.py`: vLLM with Qwen3.8-27B plus task LoRAs (`--enable-lora`), OpenAI-compatible, autoscaling with warm pool, structured JSON output (guided decoding).
 - `serve/image.py`: Qwen-Image-2.1 on L40S/H100, generation plus editing using the crawled reference images.
 - `serve/gateway.py`: FastAPI. It retrieves candidates from LanceDB, calls the LLM, validates output against the pydantic schema, runs the image brief through the image model, and logs requests and feedback (clicks, add-to-cart) to parquet for the next training round (continual learning on AC2).
 
 ## Milestones
 1. **M0 skeleton:** repo layout, schemas, CLI, Modal app stubs, CI (ruff + pytest).
 2. **M1 data:** registry and discovery, Shopify/UCP/Firecrawl ingestion for about 10 stores, open-dataset loaders, normalization, index.
-3. **M2 datasets and graders:** all task builders, teacher distillation with a cost cap, frozen evals, baseline eval of base model vs teacher.
-4. **M3 post-training on Modal:** cold-start SFT → GenRM + rubrics → Rank-GRPO/DAPO RL → OPD into the fast reranker, on the proxy model first and then on 27B. (Optional M3b: port to AC2 once access arrives.)
+3. **M2 datasets, graders and benchmarks:** task builders, teacher distillation with a cost cap, public benchmark adapters, C2A-Bench v0 with a gold subset, and the **model bake-off** (student, teacher and image model).
+4. **M3 post-training on Tinker:** cold-start SFT → GenRM + rubrics → Rank-GRPO/DAPO RL → OPD into the fast reranker, on the proxy model first and then on 27B. (Optional M3b: port to AC2 once access arrives.)
    - **M3a** runs alongside M3 and collects human preferences through the labelling app.
 5. **M4 serving:** vLLM + image + gateway on Modal, load test.
 6. **M5 feedback loop:** logging → dataset refresh → retrain schedule.
@@ -190,6 +240,8 @@ Qwen3, GLM-5 and MiMo all use OPD in their post-training pipelines. Running plai
 - Full run: eval report comparing base, SFT, RL and teacher, plus a gateway latency/throughput test.
 
 ## Open items to confirm during implementation
-- Exact HF model IDs and licenses for Qwen 3.6-27B, Qwen-Image-2.1 and Kimi K3 API access and pricing.
+- Exact HF model IDs and licenses for Qwen3.8-27B, Inkling-Small, Qwen-Image-2.1 and FLUX.2, plus Kimi K3 / GLM-5.3 API access and pricing.
+- Which models this Tinker account can train (Qwen3.8-27B?), Tinker pricing, and the checkpoint export format for vLLM.
+- Licenses of the public benchmarks for commercial use.
 - AC2 SDK/config specifics (the docs were not reachable from this environment; the cookbook structure is used as the template).
 - Legal sign-off on each tier-B/C store before it is enabled in `registry.yaml`.
