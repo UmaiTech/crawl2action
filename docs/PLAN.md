@@ -17,7 +17,7 @@ Decisions confirmed with the user:
 
 ## Architecture (six stages, each a Modal app plus a `c2a` CLI command)
 ```
-discover → crawl/ingest → normalize+dedupe → build datasets → train (Modal-TRL; AC2 later) → eval → serve (Modal)
+discover → crawl/ingest → normalize+dedupe → build datasets → post-train (Modal: TRL+verl; AC2 later) → eval → serve (Modal)
                                                                   ↑                                     │
                                                                   └─────── production feedback logs ─────┘
 ```
