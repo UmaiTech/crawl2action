@@ -6,8 +6,11 @@
 - Optional integrations (tinker, modal, firecrawl, vllm) are extras. Import them lazily inside
   functions so the base install and tests never need them.
 - Stubs raise `c2a.NotYetImplemented(what, milestone)`; CLI stubs exit with code 2.
-- Crawling is default-deny: a store needs `enabled: true` AND `tos_status: approved`, and every
-  URL must pass `compliance.can_crawl` + `RateLimiter`.
+- Crawling is default-deny: a store needs `enabled: true` AND `tos_status: approved`. Only a human
+  sets these (`c2a registry approve --by`); automated code uses `Registry.update_descriptive`.
+- Every crawl fetch from a store goes through `compliance.CrawlSession` (ToS + robots + domain +
+  rate limit). The only exception is discovery fingerprinting, which reads public metadata
+  (`/.well-known/ucp`, plus `/products.json?limit=1` and the homepage if robots.txt allows them).
 - Money is integer minor units + ISO currency.
 - Graders are the single source of truth for quality: RL rewards (`train/rewards.py`), evals and
   serving guards all call them.

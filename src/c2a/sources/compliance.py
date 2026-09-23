@@ -47,11 +47,18 @@ def robots_allows(rp: robotparser.RobotFileParser | None, url: str) -> bool:
     return rp is not None and rp.can_fetch(USER_AGENT, url)
 
 
-def can_crawl(store: Store, url: str, rp: robotparser.RobotFileParser | None) -> tuple[bool, str]:
+def _store_gate(store: Store) -> tuple[bool, str]:
     if store.tos_status is not TosStatus.approved:
         return False, f"tos_status={store.tos_status.value}"
     if not store.enabled:
         return False, "store disabled"
+    return True, "ok"
+
+
+def can_crawl(store: Store, url: str, rp: robotparser.RobotFileParser | None) -> tuple[bool, str]:
+    ok, why = _store_gate(store)
+    if not ok:
+        return ok, why
     if urlparse(url).netloc != store.domain:
         return False, "url outside store domain"
     if not robots_allows(rp, url):
@@ -77,3 +84,53 @@ class RateLimiter:
             self._next[domain] = start + self.interval
         if start > now:
             self._sleep(start - now)
+
+
+class CrawlSession:
+    """The only way fetchers touch a store: every URL passes `can_crawl` and the rate limiter.
+
+    robots.txt is fetched once per session (unavailable robots -> everything denied).
+    """
+
+    def __init__(
+        self,
+        store: Store,
+        client: httpx.Client | None = None,
+        limiter: RateLimiter | None = None,
+        robots: robotparser.RobotFileParser | None = None,
+    ) -> None:
+        self.store = store
+        self.client = client or httpx.Client(
+            timeout=20, headers={"User-Agent": USER_AGENT}, follow_redirects=True
+        )
+        self.limiter = limiter or RateLimiter(qps=1.0)
+        self.robots = robots if robots is not None else fetch_robots(store.domain, self.client)
+        self.denied: list[tuple[str, str]] = []
+        # Hosts of APIs the store itself advertises for programmatic access (UCP profile).
+        # They still need the store's ToS approval, but not a robots.txt entry.
+        self.api_hosts: set[str] = set()
+
+    def allow_api_host(self, url: str) -> None:
+        self.api_hosts.add(urlparse(url).netloc)
+
+    def allowed(self, url: str) -> bool:
+        if urlparse(url).netloc in self.api_hosts:
+            ok, why = _store_gate(self.store)
+        else:
+            ok, why = can_crawl(self.store, url, self.robots)
+        if not ok:
+            self.denied.append((url, why))
+        return ok
+
+    def get(self, url: str, **kwargs) -> httpx.Response:
+        if not self.allowed(url):
+            raise PermissionError(f"crawl not allowed: {url} ({self.denied[-1][1]})")
+        self.limiter.wait(self.store.domain)
+        return self.client.get(url, **kwargs)
+
+    def post(self, url: str, **kwargs) -> httpx.Response:
+        """For UCP catalog APIs on the store's own domain (same gates as GET)."""
+        if not self.allowed(url):
+            raise PermissionError(f"crawl not allowed: {url} ({self.denied[-1][1]})")
+        self.limiter.wait(self.store.domain)
+        return self.client.post(url, **kwargs)

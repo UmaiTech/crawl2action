@@ -89,7 +89,12 @@ class Store(BaseModel):
     method: str = "firecrawl"  # shopify | ucp | firecrawl
     enabled: bool = False
     verticals: list[str] = Field(default_factory=list)
+    currency: str | None = None  # shop currency when the source does not state it (Shopify)
     notes: str = ""
+    # Audit trail for ToS review; only set by a human via `c2a registry approve|deny`.
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
+    review_note: str | None = None
 
 
 # ---------- Task I/O ----------

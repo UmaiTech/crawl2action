@@ -31,8 +31,8 @@ def test_train_dry_run_and_stage_mismatch():
 
 
 def test_stubs_exit_nonzero_with_milestone():
-    res = runner.invoke(app, ["crawl"])
-    assert res.exit_code == 2 and "M1" in res.output
+    res = runner.invoke(app, ["build"])
+    assert res.exit_code == 2 and "M2" in res.output
 
 
 def test_bench_tracks_and_canary():

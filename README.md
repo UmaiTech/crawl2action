@@ -39,6 +39,19 @@ uv run c2a train rl  --config configs/train/rl_student_rank_grpo.yaml
 uv run c2a train opd --config configs/train/opd_reranker.yaml
 ```
 
+## Crawling
+Crawling is default-deny: a store is crawled only after a person has reviewed its terms and approved it.
+```bash
+uv run c2a registry approve allbirds --by "<your name>" --note "ToS reviewed"
+uv run c2a discover fingerprint --store allbirds --write   # ucp / shopify / firecrawl
+uv run c2a crawl --dry-run                                  # what runs, and why others are skipped
+export FIRECRAWL_API_KEY=... TYPESAFE_API_KEY=...
+uv run c2a crawl --store allbirds --max-products 20 --label
+uv run c2a discover expand --country SE --category apparel  # candidates for review
+uv run c2a data import esci --path examples.parquet --path products.parquet --out data/open/esci
+```
+Parquet imports need `uv sync --extra data`.
+
 ## Labeling with Jev
 Scraped products are classified and labeled by hosted **Jev** (TypeSafe System One) through `c2a label`. Uncertain labels are escalated to the teacher and then to human review.
 ```bash

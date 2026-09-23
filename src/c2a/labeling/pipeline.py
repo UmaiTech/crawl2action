@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from c2a.decide.base import Decider
 from c2a.decide.systemone import (
@@ -17,10 +18,11 @@ from c2a.decide.systemone import (
     top_prob,
 )
 from c2a.labeling.cache import ResponseCache, request_key
-from c2a.labeling.escalation import Teacher, escalate, review_item
+from c2a.labeling.escalation import Teacher, append_review_queue, escalate, review_item
 from c2a.labeling.gating import Thresholds, is_confident
 from c2a.labeling.questions import QuestionSet
 from c2a.labeling.records import LabelItem, LabelRecord, ReviewItem
+from c2a.train.data import read_jsonl, write_jsonl
 
 
 @dataclass
@@ -122,3 +124,15 @@ def label(
                     run.review.append(review_item(rec, it.state, question))
             run.records.append(rec)
     return run
+
+
+def save_run(run_dir: Path, items: Sequence[LabelItem], run: LabelRun) -> None:
+    """Merge a run into run_dir (items.jsonl, labels.jsonl): re-labeled items replace their
+    previous rows; the review queue is appended."""
+    items_path, labels_path = run_dir / "items.jsonl", run_dir / "labels.jsonl"
+    prev_items = list(read_jsonl(items_path, LabelItem)) if items_path.exists() else []
+    prev_recs = list(read_jsonl(labels_path, LabelRecord)) if labels_path.exists() else []
+    new_ids = {it.id for it in items}
+    write_jsonl(items_path, [i for i in prev_items if i.id not in new_ids] + list(items))
+    write_jsonl(labels_path, [r for r in prev_recs if r.item_id not in new_ids] + run.records)
+    append_review_queue(run_dir / "review_queue.jsonl", run.review)

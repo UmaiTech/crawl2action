@@ -83,8 +83,15 @@ Storage: raw crawl JSON → parquet on a Modal Volume, with an optional S3/R2 mi
 
 Target about 50 stores in 6–8 verticals (apparel, beauty, electronics, home, grocery/health) and about 1–2M products. Locales are sv-SE, en-GB, es-ES, en-US, en-CA and fr-CA.
 
-**Crawl mechanics:**
-- incremental crawling with ETag and content hash;
+**Crawl mechanics (built in M1; `src/c2a/sources/`):**
+- **Approval is a human action.** `c2a registry approve <id> --by <name>` records who approved the store and when. Automated code (fingerprinting) can only change `platform`, `method` and `currency`.
+- **One gate for every fetch:** `CrawlSession` runs ToS approval + robots.txt + same-domain + rate limiting for every URL. The only exception is the UCP API host the store itself advertises, which still needs ToS approval but not robots.txt.
+- **Per-method ingestion:**
+  - `ucp`: `/.well-known/ucp` → REST `POST {endpoint}/catalog/search` with cursor pagination and seed queries (UCP spec 2026-01-01);
+  - `shopify`: `/products.json` (currency from the registry or `/meta.json`);
+  - `firecrawl`: v2 `/map` → compliance filter → URL triage → Jev page gate on ambiguous URLs (markdown scrape, about 1 credit) → JSON extract (about 5 credits) only for product pages.
+- **Discovery:** `c2a discover fingerprint` detects UCP / Shopify / WooCommerce / custom. `c2a discover expand` runs Firecrawl `/search` and writes candidates to `data/discovery/candidates.yaml` for review; it never writes to the registry.
+- **Incremental output:** content hashes mean unchanged products are skipped. Each store gets `data/raw/{store}/products.jsonl` and `manifest.json` (counts, errors, Firecrawl credits, Jev requests, denied URLs).
 - a per-domain QPS cap and a Firecrawl credit budget per run;
 - a PII scrub on reviews;
 - product images are stored (for the image LoRA and multimodal later) with source and licensing metadata.
@@ -304,8 +311,15 @@ All of them run in one harness (`src/c2a/eval/`, built on Inspect AI plus custom
 
 ## Milestones
 1. **M0 skeleton (done):** repo layout, schemas, CLI, compliance, Shopify parser, graders, decide interface, training data formats, rewards and advantage estimators, Tinker SFT/RL/OPD loops, gateway, Modal stubs, CI (ruff + pytest).
-2. **M1 data:** registry and discovery, Shopify/UCP/Firecrawl ingestion for about 10 stores, open-dataset loaders, normalization, index.
-3. **M2 datasets, graders and benchmarks:** task builders, teacher distillation with a cost cap, public benchmark adapters, C2A-Bench v0 with a gold subset, and the **model bake-off** (student, teacher and image model).
+2. **M1 data (done; live runs need approved stores and keys):**
+   - registry approve/deny with an audit trail;
+   - `CrawlSession` compliance gate;
+   - UCP, Shopify and Firecrawl ingestion (with the Jev page gate);
+   - discovery (fingerprint, expand);
+   - incremental `c2a crawl` (`--label` runs Jev on new products);
+   - open-dataset importers: ESCI → human `pair@1` labels, Amazon-M2 sessions, Amazon Reviews 2023 reviews and histories.
+   - **Moved to M2:** the embedding index (LanceDB), MinHash/image near-duplicate detection, FX conversion, level-2 taxonomy mapping, and the H&M, RetailRocket and Diginetica loaders.
+3. **M2 datasets, graders and benchmarks** (plus the items moved from M1): task builders, teacher distillation with a cost cap, public benchmark adapters, C2A-Bench v0 with a gold subset, and the **model bake-off** (student, teacher and image model).
 4. **M3 post-training on Tinker:** cold-start SFT → GenRM + rubrics → Rank-GRPO/DAPO RL → OPD into the fast reranker, on the proxy model first and then on 27B. (Optional M3b: port to AC2 once access arrives.)
    - **M3a** runs alongside M3 and collects human preferences through the labelling app.
 5. **M4 serving:** vLLM + image + gateway on Modal, load test.

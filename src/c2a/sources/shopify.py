@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-import httpx
-
 from c2a.normalize import to_minor_units
 from c2a.schemas import Money, Product, Store, Variant
+from c2a.sources.compliance import CrawlSession
 
 
 def parse_product(raw: dict[str, Any], store: Store, currency: str) -> Product:
@@ -73,16 +71,37 @@ def parse_products_json(
     return products, errors
 
 
-def iter_pages(
-    store: Store, client: httpx.Client, limit: int = 250, max_pages: int = 100
-) -> Iterator[dict[str, Any]]:
-    """Yield raw `/products.json` pages. Caller must check compliance and rate limit first."""
+def shop_currency(session: CrawlSession) -> str:
+    """Store config wins; otherwise Shopify's public /meta.json."""
+    if session.store.currency:
+        return session.store.currency
+    resp = session.get(f"https://{session.store.domain}/meta.json")
+    resp.raise_for_status()
+    currency = resp.json().get("currency")
+    if not currency:
+        raise ValueError(f"{session.store.id}: currency unknown; set `currency` in the registry")
+    return currency
+
+
+def crawl(
+    session: CrawlSession, max_products: int | None = None, limit: int = 250, max_pages: int = 100
+) -> tuple[list[Product], list[str]]:
+    """Crawl a Shopify storefront through the compliance session."""
+    currency = shop_currency(session)
+    products: list[Product] = []
+    errors: list[str] = []
     for page in range(1, max_pages + 1):
-        resp = client.get(
-            f"https://{store.domain}/products.json", params={"limit": limit, "page": page}
+        resp = session.get(
+            f"https://{session.store.domain}/products.json",
+            params={"limit": limit, "page": page},
         )
         resp.raise_for_status()
         payload = resp.json()
         if not payload.get("products"):
-            return
-        yield payload
+            break
+        got, errs = parse_products_json(payload, session.store, currency)
+        products += got
+        errors += errs
+        if max_products is not None and len(products) >= max_products:
+            return products[:max_products], errors
+    return products, errors
