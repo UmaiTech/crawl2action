@@ -1,0 +1,21 @@
+# crawl2action defaults. Override any key with env vars, e.g. C2A__MODELS__STUDENT=Qwen/Qwen3.5-27B
+paths:
+  data_dir: data
+  runs_dir: runs
+budgets:
+  firecrawl_credits_per_run: 5000
+  teacher_usd_per_run: 100
+  default_qps_per_domain: 1.0
+models:
+  student: Qwen/Qwen3.8-27B            # post-trained + served; confirm availability on Tinker (M3)
+  student_alt: thinkingmachines/Inkling-Small   # bake-off challenger
+  proxy_student: Qwen/Qwen3.5-4B       # fast iteration before scaling to 27B
+  teacher: kimi-k3                     # API-only data generator / rubric writer (alt: glm-5.3, qwen3.8-max)
+  decider: llm-semantic-router/Decision-1.0-Lux-9B   # starting checkpoint; we post-train it
+  image: Qwen/Qwen-Image-2.1
+  embedding: Qwen/Qwen3-Embedding-0.6B
+locales: [sv-SE, en-GB, es-ES, en-US, en-CA, fr-CA]
+labeler:                               # hosted Jev (TypeSafe System One); key: TYPESAFE_API_KEY
+  provider: typesafe
+  base_url: https://api.typesafe.ai
+  model: jev-latest
