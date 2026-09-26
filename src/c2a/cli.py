@@ -8,11 +8,19 @@ from pathlib import Path
 import typer
 
 from c2a import NotYetImplemented
-from c2a.config import load_settings
+from c2a.config import load_dotenv, load_settings
 
 app = typer.Typer(
     help="crawl2action: crawl -> datasets -> post-train -> bench -> serve", no_args_is_help=True
 )
+
+
+@app.callback()
+def _main() -> None:
+    """Load .env (never overriding variables already set) before any command."""
+    load_dotenv()
+
+
 registry_app = typer.Typer(help="Store registry", no_args_is_help=True)
 train_app = typer.Typer(help="Post-training (Tinker primary; Modal fallback)", no_args_is_help=True)
 app.add_typer(registry_app, name="registry")
@@ -288,9 +296,13 @@ def discover_fingerprint(
     reg = load_registry(path)
     for s in [reg.by_id(i) for i in store] if store else reg.stores:
         fp = fingerprint(s.domain)
-        typer.echo(f"{s.id:18} {fp.platform:11} -> method={fp.method} ({fp.evidence})")
+        cur = f", currency={fp.currency}" if fp.currency else ""
+        typer.echo(f"{s.id:18} {fp.platform:11} -> method={fp.method}{cur} ({fp.evidence})")
         if write and fp.platform != "unknown":
-            reg.update_descriptive(s.id, platform=fp.platform, method=fp.method)
+            fields = {"platform": fp.platform, "method": fp.method}
+            if fp.currency:
+                fields["currency"] = fp.currency
+            reg.update_descriptive(s.id, **fields)
     if write:
         save_registry(reg, path)
 
@@ -416,6 +428,164 @@ def data_import(
         typer.echo(f"amazon_reviews: {n} reviews, {len(hist)} user histories -> {out}")
     else:
         raise typer.BadParameter(f"unknown dataset: {dataset}")
+
+
+@app.command()
+def doctor(
+    live: bool = typer.Option(False, "--live", help="also make one real Jev (and Firecrawl) call"),
+    path: Path | None = RegistryOpt,
+) -> None:
+    """Check keys, API reachability and approved stores before a real run."""
+    from c2a.doctor import format_checks, run_doctor
+    from c2a.sources.registry import load_registry
+
+    checks = run_doctor(load_registry(path), load_settings(), live=live)
+    typer.echo(format_checks(checks))
+    if any(c.status == "fail" for c in checks):
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def pilot(
+    store: list[str] = typer.Option(..., "--store", help="approved store ids"),
+    data_dir: Path = typer.Option(Path("data"), "--data"),
+    max_products: int = typer.Option(200, "--max-products"),
+    pairs_k: int = typer.Option(3, "--pairs-k", help="similar products per anchor (0 = no pairs)"),
+    max_jev_requests: int = typer.Option(500, "--max-jev-requests"),
+    path: Path | None = RegistryOpt,
+) -> None:
+    """Preflight -> crawl -> Jev product labels -> Jev pair labels -> report."""
+    import os
+
+    from c2a.doctor import format_checks, run_doctor
+    from c2a.pilot import run_pilot
+    from c2a.sources.registry import load_registry
+
+    reg = load_registry(path)
+    settings = load_settings()
+    checks = run_doctor(reg, settings)
+    fails = [c for c in checks if c.status == "fail"]
+    if fails:
+        typer.echo(format_checks(fails))
+        raise typer.Exit(code=1)
+    firecrawl = None
+    if os.environ.get("FIRECRAWL_API_KEY"):
+        from c2a.sources.firecrawl import FirecrawlClient
+
+        firecrawl = FirecrawlClient(credit_budget=settings.budgets.firecrawl_credits_per_run)
+    try:
+        res = run_pilot(
+            reg,
+            settings,
+            store,
+            _make_decider("jev"),
+            data_dir=data_dir,
+            firecrawl=firecrawl,
+            max_products=max_products,
+            pairs_k=pairs_k,
+            max_jev_requests=max_jev_requests,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(res.report)
+    typer.echo(
+        f"crawled {res.crawled}; {res.product_labels} product labels, {res.pair_labels} pair "
+        f"labels, {res.to_review} to review, {res.jev_requests} Jev requests, "
+        f"{res.skipped_budget} items skipped by budget. Report: {data_dir}/reports/pilot.md"
+    )
+
+
+@app.command()
+def report(
+    data_dir: Path = typer.Option(Path("data"), "--data"),
+    out: Path | None = typer.Option(None, "--out"),
+) -> None:
+    """Summarize crawls and labels (Markdown)."""
+    from c2a.report import build_report
+
+    text = build_report(data_dir / "raw", data_dir / "labels")
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text)
+    typer.echo(text)
+
+
+@label_app.command("pairs")
+def label_pairs(
+    store: list[str] = typer.Option(..., "--store"),
+    raw_dir: Path = typer.Option(Path("data/raw"), "--raw"),
+    out: Path = typer.Option(Path("data/labels"), "--out"),
+    k: int = typer.Option(3, "--k"),
+    backend: str = typer.Option("jev", help="jev (hosted) | keyword (offline)"),
+    max_requests: int | None = typer.Option(None, "--max-requests"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """Label product pairs (exact/substitute/complement/irrelevant) within each store."""
+    from c2a.labeling.cache import ResponseCache
+    from c2a.labeling.gating import load_thresholds
+    from c2a.labeling.pairs import candidate_pairs, pair_items
+    from c2a.labeling.pipeline import label, save_run
+    from c2a.labeling.questions import pair_v1
+    from c2a.schemas import Product
+    from c2a.train.data import read_jsonl
+
+    items = []
+    for sid in store:
+        products = list(read_jsonl(raw_dir / sid / "products.jsonl", Product))
+        items += pair_items(candidate_pairs(products, k))
+    typer.echo(f"{len(items)} candidate pairs from {len(store)} store(s)")
+    if dry_run or not items:
+        return
+    run = label(
+        items,
+        _make_decider(backend),
+        pair_v1(),
+        load_thresholds(),
+        ResponseCache(out / "cache"),
+        max_requests,
+        model=load_settings().labeler.model,
+    )
+    save_run(out / "pair_v1", items, run)
+    typer.echo(
+        f"{len(run.records)} labels, {len(run.review)} to review, {run.requests_made} requests"
+    )
+
+
+@label_app.command("review")
+def label_review(
+    run_dir: Path = typer.Option(Path("data/labels/product_v1"), "--run-dir"),
+    by: str | None = typer.Option(None, "--by", help="reviewer name (default: $USER)"),
+    limit: int = typer.Option(20, "--limit"),
+) -> None:
+    """Review escalated labels in the terminal. Progress is saved after every answer."""
+    import os
+
+    from c2a.labeling.review import apply_decision, format_item, load_queue, options
+
+    reviewer = by or os.environ.get("USER") or ""
+    if not reviewer:
+        raise typer.BadParameter("pass --by <name>")
+    queue = load_queue(run_dir)[:limit]
+    if not queue:
+        typer.echo(f"nothing to review in {run_dir}")
+        return
+    done = 0
+    for i, item in enumerate(queue, 1):
+        typer.echo("\n" + format_item(item, i, len(queue)))
+        opts = options(item.question)
+        while True:
+            choice = typer.prompt("choice").strip().lower()
+            if choice in ("s", "q") or (choice.isdigit() and 1 <= int(choice) <= len(opts)):
+                break
+            typer.echo(f"enter 1-{len(opts)}, s or q")
+        if choice == "q":
+            break
+        if choice == "s":
+            continue
+        apply_decision(run_dir, item, opts[int(choice) - 1], reviewer)
+        done += 1
+    left = len(load_queue(run_dir))
+    typer.echo(f"reviewed {done}; {left} left in the queue")
 
 
 @app.command()

@@ -319,6 +319,7 @@ All of them run in one harness (`src/c2a/eval/`, built on Inspect AI plus custom
    - incremental `c2a crawl` (`--label` runs Jev on new products);
    - open-dataset importers: ESCI → human `pair@1` labels, Amazon-M2 sessions, Amazon Reviews 2023 reviews and histories.
    - **Moved to M2:** the embedding index (LanceDB), MinHash/image near-duplicate detection, FX conversion, level-2 taxonomy mapping, and the H&M, RetailRocket and Diginetica loaders.
+   - **Pilot tooling (current focus):** `.env` loading; `c2a doctor [--live]` preflight; Shopify retries (`Retry-After`), a currency fallback and page guards; `pair_v1` candidate pairs; `c2a label review` (terminal review → gold); `c2a pilot` and `c2a report`. Runbook: `docs/PILOT.md`. It runs on the user's machine, because the cloud sandbox cannot reach stores or APIs.
 3. **M2 datasets, graders and benchmarks** (plus the items moved from M1): task builders, teacher distillation with a cost cap, public benchmark adapters, C2A-Bench v0 with a gold subset, and the **model bake-off** (student, teacher and image model).
 4. **M3 post-training on Tinker:** cold-start SFT → GenRM + rubrics → Rank-GRPO/DAPO RL → OPD into the fast reranker, on the proxy model first and then on 27B. (Optional M3b: port to AC2 once access arrives.)
    - **M3a** runs alongside M3 and collects human preferences through the labelling app.

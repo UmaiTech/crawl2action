@@ -98,8 +98,14 @@ class CrawlSession:
         client: httpx.Client | None = None,
         limiter: RateLimiter | None = None,
         robots: robotparser.RobotFileParser | None = None,
+        max_retries: int = 3,
+        sleep=time.sleep,
     ) -> None:
         self.store = store
+        self.max_retries = max_retries
+        self._sleep = sleep
+        self.retries = 0
+        self.warnings: list[str] = []
         self.client = client or httpx.Client(
             timeout=20, headers={"User-Agent": USER_AGENT}, follow_redirects=True
         )
@@ -122,15 +128,33 @@ class CrawlSession:
             self.denied.append((url, why))
         return ok
 
-    def get(self, url: str, **kwargs) -> httpx.Response:
+    def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
         if not self.allowed(url):
             raise PermissionError(f"crawl not allowed: {url} ({self.denied[-1][1]})")
-        self.limiter.wait(self.store.domain)
-        return self.client.get(url, **kwargs)
+        for attempt in range(self.max_retries + 1):
+            self.limiter.wait(self.store.domain)
+            resp = self.client.request(method, url, **kwargs)
+            if resp.status_code not in RETRY_STATUS or attempt == self.max_retries:
+                return resp
+            self.retries += 1
+            self._sleep(_retry_after(resp, default=2.0**attempt))
+        raise AssertionError("unreachable")
+
+    def get(self, url: str, **kwargs) -> httpx.Response:
+        return self._request("GET", url, **kwargs)
 
     def post(self, url: str, **kwargs) -> httpx.Response:
-        """For UCP catalog APIs on the store's own domain (same gates as GET)."""
-        if not self.allowed(url):
-            raise PermissionError(f"crawl not allowed: {url} ({self.denied[-1][1]})")
-        self.limiter.wait(self.store.domain)
-        return self.client.post(url, **kwargs)
+        """For UCP catalog APIs (same gates as GET)."""
+        return self._request("POST", url, **kwargs)
+
+
+RETRY_STATUS = {429, 500, 502, 503, 504}
+MAX_RETRY_AFTER = 60.0
+
+
+def _retry_after(resp: httpx.Response, default: float) -> float:
+    """Seconds from a numeric Retry-After header (capped), else the default backoff."""
+    try:
+        return min(float(resp.headers.get("Retry-After", "")), MAX_RETRY_AFTER)
+    except ValueError:
+        return default

@@ -13,8 +13,11 @@ from c2a.sources.registry import Registry
 from .test_ucp import PROFILE
 
 
-def mock_site(domain, well_known=None, products_json=None, home=""):
+def mock_site(domain, well_known=None, products_json=None, home="", meta=None):
     respx.get(f"https://{domain}/robots.txt").mock(return_value=httpx.Response(404))
+    respx.get(f"https://{domain}/meta.json").mock(
+        return_value=httpx.Response(200, json=meta) if meta else httpx.Response(404)
+    )
     respx.get(f"https://{domain}/.well-known/ucp").mock(
         return_value=httpx.Response(200, json=well_known) if well_known else httpx.Response(404)
     )
@@ -29,7 +32,7 @@ def mock_site(domain, well_known=None, products_json=None, home=""):
 @respx.mock
 def test_fingerprint_platforms():
     mock_site("u.test", well_known=PROFILE)
-    mock_site("s.test", products_json={"products": []})
+    mock_site("s.test", products_json={"products": []}, meta={"currency": "SEK"})
     mock_site("w.test", home="<link href='/wp-content/plugins/woocommerce/x.css'>")
     mock_site("c.test", home="<html>hello</html>")
     got = {d: fingerprint(d) for d in ("u.test", "s.test", "w.test", "c.test")}
@@ -39,6 +42,7 @@ def test_fingerprint_platforms():
         "w.test": ("woocommerce", "firecrawl"),
         "c.test": ("custom", "firecrawl"),
     }
+    assert got["s.test"].currency == "SEK" and got["c.test"].currency is None
 
 
 @respx.mock

@@ -42,6 +42,7 @@ class Fingerprint:
     platform: str  # ucp | shopify | woocommerce | custom | unknown
     method: str  # ucp | shopify | firecrawl
     evidence: str
+    currency: str | None = None  # Shopify /meta.json currency when available
 
 
 def _get(client: httpx.Client, url: str) -> httpx.Response | None:
@@ -69,7 +70,13 @@ def fingerprint(domain: str, client: httpx.Client | None = None) -> Fingerprint:
             if resp is not None and resp.status_code == 200:
                 try:
                     if "products" in resp.json():
-                        return Fingerprint(domain, "shopify", "shopify", "/products.json")
+                        return Fingerprint(
+                            domain,
+                            "shopify",
+                            "shopify",
+                            "/products.json",
+                            _shopify_currency(client, base, rp),
+                        )
                 except ValueError:
                     pass
         if not robots_allows(rp, base + "/"):
@@ -88,6 +95,18 @@ def fingerprint(domain: str, client: httpx.Client | None = None) -> Fingerprint:
     finally:
         if own:
             client.close()
+
+
+def _shopify_currency(client: httpx.Client, base: str, rp) -> str | None:
+    if not robots_allows(rp, base + "/meta.json"):
+        return None
+    resp = _get(client, base + "/meta.json")
+    if resp is None or resp.status_code != 200:
+        return None
+    try:
+        return resp.json().get("currency") or None
+    except ValueError:
+        return None
 
 
 def _domain(url: str) -> str:

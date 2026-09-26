@@ -71,37 +71,59 @@ def parse_products_json(
     return products, errors
 
 
+COUNTRY_CURRENCY = {"SE": "SEK", "GB": "GBP", "ES": "EUR", "US": "USD", "CA": "CAD"}
+
+
 def shop_currency(session: CrawlSession) -> str:
-    """Store config wins; otherwise Shopify's public /meta.json."""
+    """Registry currency, else Shopify's public /meta.json, else the country's currency
+    (recorded as a warning because multi-currency shops may differ)."""
     if session.store.currency:
         return session.store.currency
-    resp = session.get(f"https://{session.store.domain}/meta.json")
-    resp.raise_for_status()
-    currency = resp.json().get("currency")
-    if not currency:
+    meta_url = f"https://{session.store.domain}/meta.json"
+    if session.allowed(meta_url):
+        resp = session.get(meta_url)
+        if resp.status_code == 200:
+            try:
+                currency = resp.json().get("currency")
+            except ValueError:
+                currency = None
+            if currency:
+                return currency
+    fallback = COUNTRY_CURRENCY.get(session.store.country)
+    if not fallback:
         raise ValueError(f"{session.store.id}: currency unknown; set `currency` in the registry")
-    return currency
+    session.warnings.append(f"currency not found; assumed {fallback} from country")
+    return fallback
 
 
 def crawl(
     session: CrawlSession, max_products: int | None = None, limit: int = 250, max_pages: int = 100
 ) -> tuple[list[Product], list[str]]:
-    """Crawl a Shopify storefront through the compliance session."""
+    """Crawl a Shopify storefront through the compliance session.
+
+    Stops on an empty page, a short page (fewer than `limit` products) or a page identical
+    to the previous one (some themes ignore `page`).
+    """
     currency = shop_currency(session)
     products: list[Product] = []
     errors: list[str] = []
+    prev_ids: list | None = None
     for page in range(1, max_pages + 1):
         resp = session.get(
             f"https://{session.store.domain}/products.json",
             params={"limit": limit, "page": page},
         )
         resp.raise_for_status()
-        payload = resp.json()
-        if not payload.get("products"):
+        raw = resp.json().get("products") or []
+        ids = [p.get("id") for p in raw]
+        if not raw or ids == prev_ids:
             break
-        got, errs = parse_products_json(payload, session.store, currency)
+        prev_ids = ids
+        got, errs = parse_products_json({"products": raw}, session.store, currency)
         products += got
         errors += errs
         if max_products is not None and len(products) >= max_products:
             return products[:max_products], errors
+        if len(raw) < limit:
+            break
     return products, errors

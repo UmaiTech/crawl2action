@@ -40,6 +40,8 @@ uv run c2a train opd --config configs/train/opd_reranker.yaml
 ```
 
 ## Crawling
+**First real run:** follow [`docs/PILOT.md`](docs/PILOT.md) (`c2a doctor` → `c2a pilot` → `c2a label review` → `c2a report`).
+
 Crawling is default-deny: a store is crawled only after a person has reviewed its terms and approved it.
 ```bash
 uv run c2a registry approve allbirds --by "<your name>" --note "ToS reviewed"

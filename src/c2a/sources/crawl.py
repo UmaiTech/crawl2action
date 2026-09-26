@@ -43,6 +43,8 @@ class StoreManifest:
     firecrawl_credits: int = 0
     jev_requests: int = 0
     denied_urls: int = 0
+    retries: int = 0
+    warnings: list[str] = field(default_factory=list)
     budget_exhausted: bool = False
 
 
@@ -100,6 +102,8 @@ def crawl_one(
     except (PermissionError, ValueError, RuntimeError, httpx.HTTPError) as exc:
         m.errors.append(f"{type(exc).__name__}: {exc}")
     m.denied_urls = len(session.denied)
+    m.retries = session.retries
+    m.warnings = list(session.warnings)
     changed = _write_incremental(out_dir / store.id, products, m)
     m.finished_at = datetime.now(UTC).isoformat()
     (out_dir / store.id).mkdir(parents=True, exist_ok=True)

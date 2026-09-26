@@ -65,6 +65,30 @@ def _apply_env(data: dict[str, Any], prefix: str = "C2A") -> dict[str, Any]:
     return data
 
 
+def load_dotenv(path: Path | str = ".env") -> list[str]:
+    """Load KEY=VALUE lines into os.environ without overriding variables already set.
+
+    Minimal parser (no dependency): ignores blank lines and comments, strips optional
+    `export ` and matching quotes. Returns the keys it set.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return []
+    loaded = []
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.removeprefix("export ").partition("=")
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        if key and value and key not in os.environ:
+            os.environ[key] = value
+            loaded.append(key)
+    return loaded
+
+
 def load_settings(path: Path | str | None = None) -> Settings:
     path = Path(path) if path else DEFAULT_CONFIG
     data: dict[str, Any] = {}
